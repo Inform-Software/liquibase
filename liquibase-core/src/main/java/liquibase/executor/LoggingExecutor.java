@@ -17,12 +17,20 @@ import liquibase.sql.visitor.SqlVisitor;
 import liquibase.sqlgenerator.SqlGeneratorFactory;
 import liquibase.statement.ExecutablePreparedStatement;
 import liquibase.statement.SqlStatement;
+import liquibase.statement.core.ClearDatabaseChangeLogTableStatement;
+import liquibase.statement.core.CreateDatabaseChangeLogLockTableStatement;
+import liquibase.statement.core.CreateDatabaseChangeLogTableStatement;
 import liquibase.statement.core.CreateProcedureStatement;
 import liquibase.statement.core.GetNextChangeSetSequenceValueStatement;
+import liquibase.statement.core.InitializeDatabaseChangeLogLockTableStatement;
 import liquibase.statement.core.LockDatabaseChangeLogStatement;
+import liquibase.statement.core.MarkChangeSetRanStatement;
 import liquibase.statement.core.RawSqlStatement;
+import liquibase.statement.core.RemoveChangeSetRanStatusStatement;
 import liquibase.statement.core.SelectFromDatabaseChangeLogLockStatement;
+import liquibase.statement.core.SelectFromDatabaseChangeLogStatement;
 import liquibase.statement.core.UnlockDatabaseChangeLogStatement;
+import liquibase.statement.core.UpdateChangeSetChecksumStatement;
 import liquibase.util.StreamUtil;
 
 @LiquibaseService(skip = true)
@@ -30,6 +38,7 @@ public class LoggingExecutor extends AbstractExecutor {
 
     private Writer output;
     private Executor delegatedReadExecutor;
+    private boolean batchChangelogStatements;
 
     public LoggingExecutor(Executor delegatedExecutor, Writer output, Database database) {
         if (output != null) {
@@ -43,6 +52,21 @@ public class LoggingExecutor extends AbstractExecutor {
 
     protected Writer getOutput() {
         return output;
+    }
+
+    /**
+     * For SQL Server and Sybase each statement is by default in a single batch separated by a GO statement.
+     * If you execute the script as a whole this means that though a statement may have failed an EXECUTED entry
+     * will be stored in DATABASECHANGELOG for the failed change log.
+     *
+     * Use this flag to omit the GO statement for every statement that does not insert or update Liquibase own tables,
+     * such that in case of a failed statement no DATABASECHANGELOG entry will be created.
+     *
+     * @param batchChangelogStatements if true all statements of a change log are batched (separated by a GO statement)
+     *                                    instead of every statement.
+     */
+    public void setBatchChangelogStatements(boolean batchChangelogStatements) {
+        this.batchChangelogStatements = batchChangelogStatements;
     }
 
     @Override
@@ -111,38 +135,7 @@ public class LoggingExecutor extends AbstractExecutor {
                 }
 
                 output.write(statement);
-
-                if (database instanceof MSSQLDatabase || database instanceof SybaseDatabase || database instanceof SybaseASADatabase) {
-                    output.write(StreamUtil.getLineSeparator());
-                    output.write("GO");
-    //            } else if (database instanceof OracleDatabase) {
-    //                output.write(StreamUtil.getLineSeparator());
-    //                output.write("/");
-                } else {
-                    String endDelimiter = ";";
-                    String potentialDelimiter = null;
-                    if (sql instanceof RawSqlStatement) {
-                        potentialDelimiter = ((RawSqlStatement) sql).getEndDelimiter();
-                    } else if (sql instanceof CreateProcedureStatement) {
-                        potentialDelimiter = ((CreateProcedureStatement) sql).getEndDelimiter();
-                    }
-
-                    if (potentialDelimiter != null) {
-                        potentialDelimiter = potentialDelimiter.replaceFirst("\\$$", ""); //ignore trailing $ as a regexp to determine if it should be output
-
-                        if (potentialDelimiter.replaceAll("\\n", "\n").replace("\\r", "\r").matches("[;/\r\n\\w@\\-]+")) {
-                            endDelimiter = potentialDelimiter;
-                        }
-                    }
-
-                    endDelimiter = endDelimiter.replace("\\n", "\n");
-                    endDelimiter = endDelimiter.replace("\\r", "\r");
-
-
-                    if (!statement.endsWith(endDelimiter)) {
-                        output.write(endDelimiter);
-                    }
-                }
+                writeEndDelimiter(sql, statement);
                 output.write(StreamUtil.getLineSeparator());
                 output.write(StreamUtil.getLineSeparator());
             }
@@ -215,7 +208,73 @@ public class LoggingExecutor extends AbstractExecutor {
     public boolean updatesDatabase() {
         return false;
     }
-    
+
+    protected void writeEndDelimiter(SqlStatement sql, String statement) throws IOException {
+    	if (database instanceof MSSQLDatabase || database instanceof SybaseDatabase || database instanceof SybaseASADatabase) {
+    		if (printGoStatement(sql)) {
+	            output.write(StreamUtil.getLineSeparator());
+	            output.write("GO");
+    		}
+//            } else if (database instanceof OracleDatabase) {
+//                output.write(StreamUtil.getLineSeparator());
+//                output.write("/");
+        } else {
+            String endDelimiter = ";";
+            String potentialDelimiter = null;
+            if (sql instanceof RawSqlStatement) {
+                potentialDelimiter = ((RawSqlStatement) sql).getEndDelimiter();
+            } else if (sql instanceof CreateProcedureStatement) {
+                potentialDelimiter = ((CreateProcedureStatement) sql).getEndDelimiter();
+            }
+
+            if (potentialDelimiter != null) {
+                potentialDelimiter = potentialDelimiter.replaceFirst("\\$$", ""); //ignore trailing $ as a regexp to determine if it should be output
+
+                if (potentialDelimiter.replaceAll("\\n", "\n").replace("\\r", "\r").matches("[;/\r\n\\w@\\-]+")) {
+                    endDelimiter = potentialDelimiter;
+                }
+            }
+
+            endDelimiter = endDelimiter.replace("\\n", "\n");
+            endDelimiter = endDelimiter.replace("\\r", "\r");
+
+
+            if (!statement.endsWith(endDelimiter)) {
+                output.write(endDelimiter);
+            }
+        }
+    }
+
+    private boolean printGoStatement(SqlStatement sql) {
+        if (!batchChangelogStatements) {
+            return true;
+        } else if (sql instanceof ClearDatabaseChangeLogTableStatement) {
+            return true;
+        } else if (sql instanceof CreateDatabaseChangeLogLockTableStatement) {
+            return true;
+        } else if (sql instanceof CreateDatabaseChangeLogTableStatement) {
+            return true;
+        } else if (sql instanceof InitializeDatabaseChangeLogLockTableStatement) {
+            return true;
+        } else if (sql instanceof LockDatabaseChangeLogStatement) {
+            return true;
+        } else if (sql instanceof MarkChangeSetRanStatement) {
+            return true;
+        } else if (sql instanceof RemoveChangeSetRanStatusStatement) {
+            return true;
+        } else if (sql instanceof SelectFromDatabaseChangeLogLockStatement) {
+            return true;
+        } else if (sql instanceof SelectFromDatabaseChangeLogStatement) {
+            return true;
+        } else if (sql instanceof UnlockDatabaseChangeLogStatement) {
+            return true;
+        } else if (sql instanceof UpdateChangeSetChecksumStatement) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
     private class NoopWriter extends Writer {
 
         @Override
@@ -235,5 +294,5 @@ public class LoggingExecutor extends AbstractExecutor {
 
     }
 
-    
+
 }
