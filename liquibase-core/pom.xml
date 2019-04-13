@@ -10,12 +10,12 @@
     <parent>
         <groupId>org.liquibase</groupId>
         <artifactId>liquibase-parent</artifactId>
-        <version>3.5.5-INFORM-1</version>
+        <version>3.5.5-INFORM-2</version>
     </parent>
 
     <properties>
         <bundle.namespace>liquibase.*</bundle.namespace>
-        <project.version>3.5.4</project.version>
+        <project.version>3.5.5-INFORM-2</project.version>
     </properties>
 
     <dependencies>
